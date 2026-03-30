@@ -1,0 +1,5 @@
+{
+  "name": "DataStory Builder",
+  "description": "Converts T-SQL stored procedures into Jira-ready User Stories and JSON.",
+  "requestFramePermissions": []
+}
