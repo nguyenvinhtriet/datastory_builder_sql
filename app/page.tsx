@@ -14,7 +14,24 @@ export default function HomePage() {
   const [includeDataMapping, setIncludeDataMapping] = useState(true);
   const [isCopied, setIsCopied] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
+  
+  // Auth states
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isCheckingAuth, setIsCheckingAuth] = useState(true);
+  const [loginUsername, setLoginUsername] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
+  
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Check auth state on mount
+  useEffect(() => {
+    const auth = sessionStorage.getItem('isAuthenticated');
+    if (auth === 'true') {
+      setIsAuthenticated(true);
+    }
+    setIsCheckingAuth(false);
+  }, []);
 
   // Simulate progress while waiting for the API
   useEffect(() => {
@@ -97,114 +114,24 @@ export default function HomePage() {
 
       const ai = new GoogleGenAI({ apiKey });
 
-      const systemInstruction = `You are an expert Business Analyst + Data/ETL Architect specialized in Microsoft Fabric and SQL Server (T-SQL).
-Your task: Given a stored procedure (MSSQL) that loads from Silver -> Gold, generate a complete Jira/Azure DevOps/ClickUp-ready User Story in highly structured Markdown.
+      // Fetch the prompt and template configurations
+      const [promptRes, templateRes] = await Promise.all([
+        fetch('/prompt.md'),
+        fetch('/template.md')
+      ]);
 
-Follow this exact Markdown structure and formatting (do not output JSON, only Markdown):
+      if (!promptRes.ok || !templateRes.ok) {
+        throw new Error("Failed to load configuration files (prompt.md or template.md).");
+      }
 
-## User Story — Build [Data Product Alias]
+      const promptText = await promptRes.text();
+      const templateText = await templateRes.text();
 
-### Description
-As an Analytics Engineer, I want to consolidate Silver sources **[List of components]** into the **[Data Product Alias]** Gold table, apply business rules, compute metrics, and enrich the data, so that the dataset is trusted, certified, and ready for **[summarize business needs]**.
+      let systemInstruction = `${promptText}\n\n${templateText}`;
 
----
-
-### Acceptance Criteria
-
-**1. Source Consolidation & Modeling**
-* Merge all Silver data from [List of components] into [Data Product Alias].
-* Ensure one row per [Define Grain].
-
-**Join Logic Details:**
-| Base Table | Joined Table | Join Type | Join Condition / Logic |
-| :--- | :--- | :--- | :--- |
-| \`schema.base_table\` | \`schema.joined_table\` | \`LEFT JOIN\` | \`base_table.id = joined_table.base_id\` |
-
-*(Note: List EVERY table join explicitly in this table. Do not summarize "over X tables". List them all with their specific join keys and logic.)*
-
-**2. Business Rule Application**
-* [Rule 1 derived from SQL]
-* [Rule 2 derived from SQL]
-
-**3. Metric Computation**
-* [Metric 1]: [Logic]
-* [Metric 2]: [Logic]
-
-**4. Enrichment & Contextualization**
-* [Enrichment 1]
-* [Enrichment 2]
-
-### Validation
-* [Validation 1]
-* [Validation 2]
-
----
-
-### Implementation Notes
-* [Note 1]
-* [Note 2]
-
----
-
-### Final Schema Result – [Data Product Alias]
-**Grain:** [Define Grain]
-
-#### Key Columns
-
-**Identifiers**
-* \`column_name\` — [Description] (Primary key / Business key)
-
-**Timestamps**
-* \`column_name\` — [Description]
-
-**Derived Temporal**
-* \`column_name\` — [Description]
-
-**Metrics**
-* \`column_name\` — [Description]
-
-**Audit or System Keys**
-* \`column_name\` — [Description]
-${includeDataMapping ? `
----
-
-### Data Mapping
-| Field | Definition from silver stage |
-| :--- | :--- |
-| \`destination_column_1\` | \`source_table.source_column\` |
-| \`destination_column_2\` | \`CASE WHEN ... THEN ... ELSE ... END\` |
-
-**CRITICAL MAPPING RULES:**
-1. **List EVERY SINGLE COLUMN** present in the destination Gold table. 
-2. **DO NOT summarize** or group fields (e.g., NEVER write "All other standard fields mapped directly").
-3. If the Gold table is created via a **UNION** of multiple Silver tables, explicitly detail how the column is derived from each of the unioned tables if they differ, or state the common logic.
-4. Format complex logic (like \`CASE WHEN\`) cleanly using \`<br>\` for line breaks so it renders correctly in a Markdown table.
-` : ''}
----
-
-### Data Quality Rules
-1. **Uniqueness:** [Rule]
-2. **Completeness:** [Rule. Note: "Null" is not just SQL NULL. It includes undefined, not exists, empty strings (''), or placeholder values like -1, 'N/A', or 'Unknown'. Ensure completeness rules account for these.]
-3. **Format:** [Rule]
-4. **Range:** [Rule]
-5. **Business Rule:** [Rule]
-
----
-
-### Validation Scripts (T-SQL)
-Provide ready-to-run T-SQL validation scripts to verify the Silver-to-Gold transformation. Include at least:
-1. **Row Count / Completeness Check:** (Compare source vs target)
-2. **Uniqueness Check:** (Check for duplicate keys in Gold)
-3. **Metric/Aggregation Check:** (Compare a sum/count between Silver and Gold)
-4. **Orphan/Missing Records Check:** (Keys in Silver not in Gold)
-
-Use markdown SQL code blocks (\`\`\`sql) for these scripts.
-
-IMPORTANT WRITING RULES:
-- Output ONLY valid Markdown text. Do NOT wrap the entire response in \`\`\`markdown codeblocks.
-- Use plain, concise business language.
-- Extract real column names, tables, and logic from the provided SQL.
-- If information is missing, make reasonable assumptions based on standard Data Engineering practices, but keep it accurate to the SQL provided.`;
+      if (!includeDataMapping) {
+        systemInstruction += "\n\nCRITICAL INSTRUCTION: The user has opted OUT of the Data Mapping section. Do NOT generate the 'Data Mapping' table or section in your response, even though it is shown in the template.";
+      }
 
       const response = await ai.models.generateContent({
         model: 'gemini-3.1-pro-preview',
@@ -238,6 +165,88 @@ IMPORTANT WRITING RULES:
       setProgress(100);
     }
   };
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoginError('');
+
+    if (loginUsername !== 'admin') {
+      setLoginError('Invalid username or password');
+      return;
+    }
+
+    try {
+      // Hash the input password using Web Crypto API
+      const encoder = new TextEncoder();
+      const data = encoder.encode(loginPassword);
+      const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+      // Pre-computed SHA-256 hash for "Admin@123q"
+      const EXPECTED_HASH = '51ca4d506b7c02bb4e779be45a4b4b85516b2294dfd11db96f15d9bd97287c2c';
+
+      if (hashHex === EXPECTED_HASH) {
+        setIsAuthenticated(true);
+        sessionStorage.setItem('isAuthenticated', 'true');
+      } else {
+        setLoginError('Invalid username or password');
+      }
+    } catch (err) {
+      console.error('Hashing error:', err);
+      setLoginError('An error occurred during login');
+    }
+  };
+
+  if (isCheckingAuth) {
+    return <div className="min-h-screen bg-slate-50 flex items-center justify-center"><Loader2 className="w-8 h-8 animate-spin text-blue-600" /></div>;
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+        <div className="bg-white p-8 rounded-xl shadow-sm border border-slate-200 w-full max-w-md">
+          <div className="flex items-center gap-2 text-blue-600 mb-6 justify-center">
+            <Database className="w-8 h-8" />
+            <h1 className="text-2xl font-semibold tracking-tight text-slate-900">DataStory Builder</h1>
+          </div>
+          <form onSubmit={handleLogin} className="flex flex-col gap-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Username</label>
+              <input 
+                type="text" 
+                value={loginUsername}
+                onChange={(e) => setLoginUsername(e.target.value)}
+                className="w-full p-2.5 rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Password</label>
+              <input 
+                type="password" 
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+                className="w-full p-2.5 rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                required
+              />
+            </div>
+            {loginError && (
+              <div className="text-red-600 text-sm font-medium bg-red-50 p-2 rounded-md border border-red-100">
+                {loginError}
+              </div>
+            )}
+            <button 
+              type="submit"
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 rounded-lg transition-colors mt-2"
+            >
+              Sign In
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-blue-200 flex flex-col">
